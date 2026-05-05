@@ -1,69 +1,45 @@
 import axios from 'axios';
 import type {
-  User,
   AuthData,
-  RegisterData,
-  LoginData,
-  Event,
+  BackendEvent,
   CreateEventData,
+  Event,
   EventFilter,
-  ChatMessage,
-  SendMessageData,
-  ApiResponse,
-  PaginatedResponse,
-  EventCategory,
+  LoginData,
+  RegisterData,
+  User,
 } from '@/types';
 
-// Re-export types
-export type { ApiResponse, PaginatedResponse, Event, EventCategory, CreateEventData };
+const API_URL = import.meta.env.VITE_API_URL || '';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-export const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:8000';
+let refreshRequest: Promise<unknown> | null = null;
 
 export const api = axios.create({
-  baseURL: `${API_URL}/api/v1`,
+  baseURL: API_URL,
+  withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
   },
 });
 
-// Request interceptor for adding auth token
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('access_token');
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  return config;
-});
-
-// Response interceptor for token refresh
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
-    const originalRequest = error.config;
+    const original = error.config;
 
-    if (error.response?.status === 401 && !originalRequest._retry) {
-      originalRequest._retry = true;
+    if (error.response?.status === 401 && !original?._retry && !original?.url?.includes('/auth/')) {
+      original._retry = true;
 
-      const refreshToken = localStorage.getItem('refresh_token');
-      if (refreshToken) {
-        try {
-          const response = await axios.post(`${API_URL}/api/v1/auth/refresh`, {
-            refresh_token: refreshToken,
-          });
-
-          const { access_token, refresh_token: newRefreshToken } = response.data;
-
-          localStorage.setItem('access_token', access_token);
-          localStorage.setItem('refresh_token', newRefreshToken);
-
-          originalRequest.headers.Authorization = `Bearer ${access_token}`;
-          return axios(originalRequest);
-        } catch (refreshError) {
-          localStorage.removeItem('access_token');
-          localStorage.removeItem('refresh_token');
-          window.location.href = '/login';
-        }
+      try {
+        refreshRequest ||= api.post('/auth/refresh').finally(() => {
+          refreshRequest = null;
+        });
+        await refreshRequest;
+        return api(original);
+      } catch (refreshError) {
+        refreshRequest = null;
+        window.dispatchEvent(new Event('mapapp:unauthorized'));
+        return Promise.reject(refreshError);
       }
     }
 
@@ -71,103 +47,76 @@ api.interceptors.response.use(
   }
 );
 
-// Auth API
+const SPB_CENTER = { lat: 59.9343, lng: 30.3351 };
+
+const hashText = (value: string) =>
+  value.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+
+export const eventIcon = (category: string) => {
+  const lower = category.toLowerCase();
+  if (lower.includes('коф') || lower.includes('cafe')) return '☕';
+  if (lower.includes('спорт') || lower.includes('вел')) return '🚲';
+  if (lower.includes('книг')) return '📚';
+  if (lower.includes('игр')) return '🎲';
+  if (lower.includes('театр')) return '🎭';
+  if (lower.includes('кино')) return '🎬';
+  return '📍';
+};
+
+export const normalizeEvent = (event: BackendEvent): Event => {
+  const seed = hashText(`${event.id}-${event.address}-${event.title}`);
+  return {
+    id: event.id,
+    title: event.title,
+    description: event.descriptions || 'Описание пока не добавлено.',
+    category: event.category,
+    address: event.address,
+    date: event.date,
+    maxUsers: event.max_users,
+    currentUsers: Math.max(1, Math.min(event.max_users, (seed % event.max_users) + 1)),
+    coordinates: {
+      lat: SPB_CENTER.lat + ((seed % 120) - 60) / 10000,
+      lng: SPB_CENTER.lng + (((seed / 3) % 140) - 70) / 10000,
+    },
+  };
+};
+
 export const authApi = {
-  register: (data: RegisterData): Promise<ApiResponse<AuthData>> =>
-    api.post('/auth/register', data).then((res) => res.data),
-
-  login: (data: LoginData): Promise<ApiResponse<AuthData>> =>
-    api.post('/auth/login', data).then((res) => res.data),
-
-  logout: (): Promise<ApiResponse> =>
-    api.post('/auth/logout').then((res) => res.data),
-
-  refresh: (refresh_token: string): Promise<ApiResponse<AuthData>> =>
-    api.post('/auth/refresh', { refresh_token }).then((res) => res.data),
-
-  getCurrentUser: (): Promise<ApiResponse<User>> =>
-    api.get('/auth/me').then((res) => res.data),
+  login: (data: LoginData) => api.post<AuthData>('/auth/login', data).then((res) => res.data),
+  register: (data: RegisterData) => api.post<number>('/auth/register', data).then((res) => res.data),
+  logout: () => api.post('/auth/logout').then((res) => res.data),
+  me: () => api.get<User>('/auth/me').then((res) => res.data),
 };
 
-// Users API
-export const usersApi = {
-  getProfile: (userId: number): Promise<ApiResponse<User>> =>
-    api.get(`/users/${userId}`).then((res) => res.data),
-
-  updateProfile: (data: Partial<User>): Promise<ApiResponse<User>> =>
-    api.put('/users/me', data).then((res) => res.data),
-
-  uploadAvatar: (file: File): Promise<ApiResponse<{ avatar_url: string }>> => {
-    const formData = new FormData();
-    formData.append('file', file);
-    return api
-      .post('/users/me/avatar', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      })
-      .then((res) => res.data);
-  },
-};
-
-// Events API
 export const eventsApi = {
-  getAll: (params?: EventFilter): Promise<ApiResponse<PaginatedResponse<Event>>> =>
-    api.get('/events', { params }).then((res) => res.data),
-
-  getById: (eventId: number): Promise<ApiResponse<Event>> =>
-    api.get(`/events/${eventId}`).then((res) => res.data),
-
-  create: (data: CreateEventData): Promise<ApiResponse<Event>> =>
-    api.post('/events', data).then((res) => res.data),
-
-  update: (
-    eventId: number,
-    data: Partial<CreateEventData>
-  ): Promise<ApiResponse<Event>> =>
-    api.put(`/events/${eventId}`, data).then((res) => res.data),
-
-  delete: (eventId: number): Promise<ApiResponse> =>
-    api.delete(`/events/${eventId}`).then((res) => res.data),
-
-  join: (eventId: number): Promise<ApiResponse> =>
-    api.post(`/events/${eventId}/join`).then((res) => res.data),
-
-  leave: (eventId: number): Promise<ApiResponse> =>
-    api.delete(`/events/${eventId}/leave`).then((res) => res.data),
-
-  getUserEvents: (userId: number): Promise<ApiResponse<{ created: Event[]; joined: Event[] }>> =>
-    api.get(`/users/${userId}/events`).then((res) => res.data),
-};
-
-// Chat API
-export const chatApi = {
-  getMessages: (eventId: number): Promise<ApiResponse<ChatMessage[]>> =>
-    api.get(`/events/${eventId}/messages`).then((res) => res.data),
-
-  sendMessage: (data: SendMessageData): Promise<ApiResponse<ChatMessage>> =>
-    api.post('/messages', data).then((res) => res.data),
-};
-
-// Categories mapping
-export const categoryLabels: Record<EventCategory, string> = {
-  cinema: 'Кино',
-  sport: 'Спорт',
-  cafe: 'Кафе',
-  theater: 'Театр',
-  concert: 'Концерт',
-  exhibition: 'Выставка',
-  festival: 'Фестиваль',
-  meeting: 'Встреча',
-  other: 'Другое',
-};
-
-export const categoryColors: Record<EventCategory, string> = {
-  cinema: '#e50914',
-  sport: '#00a651',
-  cafe: '#8b4513',
-  theater: '#9b59b6',
-  concert: '#f39c12',
-  exhibition: '#1abc9c',
-  festival: '#e74c3c',
-  meeting: '#3498db',
-  other: '#95a5a6',
+  getAll: async (filters?: EventFilter) => {
+    const hasFilters = filters && Object.values(filters).some(Boolean);
+    const path = hasFilters ? '/events/search' : '/events/all';
+    const params = hasFilters ? { page: 1, per_page: 30, ...filters } : undefined;
+    const response = await api.get<BackendEvent[]>(path, { params });
+    return response.data.map(normalizeEvent);
+  },
+  getById: async (id: number) => {
+    const response = await api.get<BackendEvent>(`/events/one/${id}`);
+    return normalizeEvent(response.data);
+  },
+  create: async (data: CreateEventData) => {
+    const response = await api.post<{ data: BackendEvent }>('/events/create', data);
+    return normalizeEvent(response.data.data);
+  },
+  join: async (id: number) => {
+    const response = await api.post<{ data: BackendEvent }>(`/events/join/${id}`);
+    return normalizeEvent(response.data.data);
+  },
+  getMine: async () => {
+    try {
+      const response = await api.get<BackendEvent[]>('/events/me');
+      return response.data.map(normalizeEvent);
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response?.status === 404) {
+        return [];
+      }
+      throw error;
+    }
+  },
 };

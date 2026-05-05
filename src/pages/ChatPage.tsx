@@ -1,64 +1,46 @@
-import { useParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { eventsApi } from '@/api';
-import ChatRoom from '@/components/ChatRoom';
+import { FormEvent, useEffect, useRef, useState } from 'react';
+import { Link, useParams } from 'react-router-dom';
+import { buildChatUrl } from '@/hooks/useSocket';
+import { useAuthStore } from '@/stores';
 
-const ChatPage: React.FC = () => {
-  const { id } = useParams<{ id: string }>();
-  const eventId = Number(id);
+const ChatPage = () => {
+  const { id } = useParams();
+  const user = useAuthStore((state) => state.user);
+  const [messages, setMessages] = useState<string[]>([]);
+  const [text, setText] = useState('');
+  const socketRef = useRef<WebSocket | null>(null);
 
-  const { data, isLoading } = useQuery({
-    queryKey: ['event', eventId],
-    queryFn: () => eventsApi.getById(eventId),
-    enabled: !!id,
-  });
+  useEffect(() => {
+    const socket = new WebSocket(buildChatUrl(user?.name || 'Гость'));
+    socketRef.current = socket;
+    socket.onmessage = (event) => setMessages((prev) => [...prev, event.data]);
+    return () => socket.close();
+  }, [user?.name]);
 
-  const event = data?.data;
-
-  if (isLoading) {
-    return (
-      <div className="container mx-auto py-8 px-4">
-        <div className="skeleton h-8 w-1/3 mb-6"></div>
-        <div className="card h-[600px]">
-          <div className="skeleton h-full"></div>
-        </div>
-      </div>
-    );
-  }
-
-  if (!event) {
-    return (
-      <div className="container mx-auto py-16 text-center">
-        <h2 className="text-2xl font-bold text-gray-900 mb-4">Событие не найдено</h2>
-      </div>
-    );
-  }
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (!text.trim()) return;
+    socketRef.current?.send(text.trim());
+    setText('');
+  };
 
   return (
-    <div className="container mx-auto py-4 px-4 h-[calc(100vh-4rem)] flex flex-col">
-      {/* Chat header */}
-      <div className="flex items-center gap-4 mb-4 pb-4 border-b border-gray-200">
-        <div>
-          <h1 className="text-xl font-bold">{event.title}</h1>
-          <p className="text-sm text-gray-500">
-            {event.participants?.length || 0} участников в чате
-          </p>
-        </div>
-        <div className="ml-auto">
-          <span
-            className="px-2 py-1 rounded-full text-xs font-medium text-white"
-            style={{ backgroundColor: '#3b82f6' }}
-          >
-            Онлайн
-          </span>
-        </div>
-      </div>
-
-      {/* Chat room */}
-      <div className="flex-1 min-h-0">
-        <ChatRoom eventId={eventId} />
-      </div>
-    </div>
+    <main className="phone-shell phone-shell--form">
+      <header className="page-header">
+        <Link className="back-button" to={`/events/${id}`}>‹</Link>
+        <h1>Чат события</h1>
+      </header>
+      <section className="chat-box">
+        {messages.map((message, index) => (
+          <div key={`${message}-${index}`} className="chat-message">{message}</div>
+        ))}
+        {messages.length === 0 && <div className="empty-state">Сообщений пока нет.</div>}
+      </section>
+      <form className="chat-form" onSubmit={submit}>
+        <input value={text} onChange={(event) => setText(event.target.value)} placeholder="Сообщение" />
+        <button className="primary-button">Отправить</button>
+      </form>
+    </main>
   );
 };
 

@@ -1,39 +1,59 @@
-import { Routes, Route, Navigate } from 'react-router-dom';
-import { useAuthStore } from '@/stores';
-import Layout from '@/components/Layout';
+import { Navigate, Route, Routes } from 'react-router-dom';
 import LoginPage from '@/pages/LoginPage';
 import RegisterPage from '@/pages/RegisterPage';
 import MapPage from '@/pages/MapPage';
-import EventsPage from '@/pages/EventsPage';
-import EventDetailPage from '@/pages/EventDetailPage';
 import CreateEventPage from '@/pages/CreateEventPage';
+import EventDetailPage from '@/pages/EventDetailPage';
 import ProfilePage from '@/pages/ProfilePage';
 import ChatPage from '@/pages/ChatPage';
 import ProtectedRoute from '@/components/ProtectedRoute';
 
-const App: React.FC = () => {
-  const { isAuthenticated } = useAuthStore();
-
-  return (
-    <Routes>
-      <Route path="/login" element={isAuthenticated ? <Navigate to="/" replace /> : <LoginPage />} />
-      <Route
-        path="/register"
-        element={isAuthenticated ? <Navigate to="/" replace /> : <RegisterPage />}
-      />
-
-      <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
-        <Route path="/" element={<MapPage />} />
-        <Route path="/events" element={<EventsPage />} />
-        <Route path="/events/:id" element={<EventDetailPage />} />
-        <Route path="/events/:id/chat" element={<ChatPage />} />
-        <Route path="/create-event" element={<CreateEventPage />} />
-        <Route path="/profile/:userId?" element={<ProfilePage />} />
-      </Route>
-
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
-  );
-};
+const App = () => (
+  <Routes>
+    <Route path="/login" element={<LoginPage />} />
+    <Route path="/register" element={<RegisterPage />} />
+    <Route
+      path="/"
+      element={
+        <ProtectedRoute>
+          <MapPage />
+        </ProtectedRoute>
+      }
+    />
+    <Route
+      path="/events/:id"
+      element={
+        <ProtectedRoute>
+          <EventDetailPage />
+        </ProtectedRoute>
+      }
+    />
+    <Route
+      path="/events/:id/chat"
+      element={
+        <ProtectedRoute>
+          <ChatPage />
+        </ProtectedRoute>
+      }
+    />
+    <Route
+      path="/create-event"
+      element={
+        <ProtectedRoute>
+          <CreateEventPage />
+        </ProtectedRoute>
+      }
+    />
+    <Route
+      path="/profile"
+      element={
+        <ProtectedRoute>
+          <ProfilePage />
+        </ProtectedRoute>
+      }
+    />
+    <Route path="*" element={<Navigate to="/" replace />} />
+  </Routes>
+);
 
 export default App;

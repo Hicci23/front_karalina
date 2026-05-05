@@ -1,243 +1,132 @@
-import { useState, useEffect } from 'react';
-import { useForm } from 'react-hook-form';
-import { useNavigate, useLocation } from 'react-router-dom';
-import { eventsApi } from '@/api';
-import { useMapStore } from '@/stores';
-import type { CreateEventData } from '@/types';
-import YandexMap from '@/components/YandexMap';
+import { FormEvent, useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { eventsApi, eventIcon } from '@/api';
+import { categories } from '@/components/EventFilters';
 
-const categories = [
-  { value: 'cinema', label: 'Кино' },
-  { value: 'sport', label: 'Спорт' },
-  { value: 'cafe', label: 'Кафе' },
-  { value: 'theater', label: 'Театр' },
-  { value: 'concert', label: 'Концерт' },
-  { value: 'exhibition', label: 'Выставка' },
-  { value: 'festival', label: 'Фестиваль' },
-  { value: 'meeting', label: 'Встреча' },
-  { value: 'other', label: 'Другое' },
-] as const;
-
-const CreateEventPage: React.FC = () => {
+const CreateEventPage = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { selectedCoordinates, selectedPlace, setSelectedPlace, setCoordinatesFromAddress } = useMapStore();
+  const locationState = location.state as
+    | {
+        address?: string;
+        coordinates?: {
+          lat: number;
+          lng: number;
+        };
+      }
+    | null;
+  const [form, setForm] = useState({
+    title: '',
+    category: categories[0],
+    address: locationState?.address || '',
+    date: '',
+    max_users: 6,
+    descriptions: '',
+  });
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  const initialCoordinates = location.state?.coordinates || selectedCoordinates || [55.751244, 37.618423];
-  const initialAddress = location.state?.address || selectedPlace || '';
-
-  const [coordinates, setCoordinates] = useState<[number, number]>(initialCoordinates as [number, number]);
-  const [address, setAddress] = useState(initialAddress);
-
-  const {
-    register,
-    handleSubmit,
-    setValue,
-    formState: { errors },
-  } = useForm<CreateEventData>();
-
-  useEffect(() => {
-    setValue('coordinates', { lat: coordinates[0], lng: coordinates[1] });
-    setValue('address', address);
-  }, [coordinates, address, setValue]);
-
-  const onSubmit = async (data: CreateEventData) => {
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setLoading(true);
+    setError('');
     try {
-      const response = await eventsApi.create({
-        ...data,
-        coordinates: { lat: coordinates[0], lng: coordinates[1] },
+      const created = await eventsApi.create({
+        ...form,
+        date: new Date(form.date).toISOString(),
       });
-      if (response.success && response.data) {
-        navigate(`/events/${response.data.id}`);
-      }
-    } catch (error) {
-      console.error('Failed to create event:', error);
+      navigate(`/events/${created.id}`);
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Не удалось создать событие.');
+    } finally {
+      setLoading(false);
     }
-  };
-
-  const handleAddressSearch = async () => {
-    if (address) {
-      await setCoordinatesFromAddress(address);
-      const coords = useMapStore.getState().selectedCoordinates;
-      if (coords) {
-        setCoordinates(coords as [number, number]);
-      }
-    }
-  };
-
-  const handleMapClick = (coords: [number, number]) => {
-    setCoordinates(coords);
-    setAddress('');
-    setSelectedPlace('Выбранная точка', coords);
   };
 
   return (
-    <div className="container mx-auto py-8 px-4">
-      <h1 className="text-3xl font-bold mb-6">Создать событие</h1>
+    <main className="phone-shell phone-shell--form">
+      <header className="page-header">
+        <Link className="back-button" to="/">‹</Link>
+        <h1>Создание события</h1>
+      </header>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {/* Map */}
-        <div className="h-[500px] rounded-lg overflow-hidden shadow-md">
-          <YandexMap
-            center={coordinates}
-            zoom={15}
-            height="100%"
-            onMapClick={handleMapClick}
+      <form className="create-form" onSubmit={submit}>
+        {error && <div className="form-alert">{error}</div>}
+        <div className="event-title-preview">
+          <span>{eventIcon(form.category)}</span>
+          <input
+            value={form.title}
+            onChange={(event) => setForm({ ...form, title: event.target.value })}
+            placeholder="Название события"
+            required
           />
         </div>
 
-        {/* Form */}
-        <div className="card">
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-            <div className="form-group">
-              <label htmlFor="title" className="form-label">
-                Название события *
-              </label>
-              <input
-                type="text"
-                id="title"
-                className={`form-input ${errors.title ? 'border-red-500' : ''}`}
-                placeholder="Например: Вечерний киноман"
-                {...register('title', { required: 'Название обязательно' })}
-              />
-              {errors.title && <p className="form-error">{errors.title.message}</p>}
-            </div>
-
-            <div className="form-group">
-              <label htmlFor="description" className="form-label">
-                Описание
-              </label>
-              <textarea
-                id="description"
-                className={`form-input textarea ${errors.description ? 'border-red-500' : ''}`}
-                placeholder="Расскажите о своём событии..."
-                rows={4}
-                {...register('description')}
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div className="form-group">
-                <label htmlFor="date_time" className="form-label">
-                  Дата и время *
-                </label>
-                <input
-                  type="datetime-local"
-                  id="date_time"
-                  className={`form-input ${errors.date_time ? 'border-red-500' : ''}`}
-                  {...register('date_time', {
-                    required: 'Укажите дату и время',
-                    validate: (value) => new Date(value) > new Date() || 'Дата должна быть в будущем',
-                  })}
-                />
-                {errors.date_time && <p className="form-error">{errors.date_time.message}</p>}
-              </div>
-
-              <div className="form-group">
-                <label htmlFor="max_participants" className="form-label">
-                  Макс. участников *
-                </label>
-                <input
-                  type="number"
-                  id="max_participants"
-                  className={`form-input ${errors.max_participants ? 'border-red-500' : ''}`}
-                  min={1}
-                  max={1000}
-                  {...register('max_participants', {
-                    required: 'Укажите максимальное количество',
-                    min: { value: 1, message: 'Минимум 1 участник' },
-                    valueAsNumber: true,
-                  })}
-                />
-                {errors.max_participants && <p className="form-error">{errors.max_participants.message}</p>}
-              </div>
-            </div>
-
-            <div className="form-group">
-              <label htmlFor="category" className="form-label">
-                Категория *
-              </label>
-              <select
-                id="category"
-                className={`form-input ${errors.category ? 'border-red-500' : ''}`}
-                {...register('category', { required: 'Выберите категорию' })}
-              >
-                {categories.map((cat) => (
-                  <option key={cat.value} value={cat.value}>
-                    {cat.label}
-                  </option>
-                ))}
-              </select>
-              {errors.category && <p className="form-error">{errors.category.message}</p>}
-            </div>
-
-            <div className="form-group">
-              <label htmlFor="address" className="form-label">
-                Адрес
-              </label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  id="address"
-                  className="form-input flex-1"
-                  placeholder="Введите адрес для поиска"
-                  value={address}
-                  onChange={(e) => setAddress(e.target.value)}
-                />
-                <button
-                  type="button"
-                  onClick={handleAddressSearch}
-                  className="btn btn-outline"
-                >
-                  Найти
-                </button>
-              </div>
-            </div>
-
-            <div className="form-group">
-              <label className="form-label">Координаты</label>
-              <div className="flex gap-2">
-                <input
-                  type="number"
-                  step="any"
-                  className="form-input flex-1"
-                  value={coordinates[0]}
-                  onChange={(e) => setCoordinates([Number(e.target.value), coordinates[1]])}
-                  placeholder="Широта"
-                />
-                <input
-                  type="number"
-                  step="any"
-                  className="form-input flex-1"
-                  value={coordinates[1]}
-                  onChange={(e) => setCoordinates([coordinates[0], Number(e.target.value)])}
-                  placeholder="Долгота"
-                />
-              </div>
-              <p className="text-sm text-gray-500 mt-1">
-                Кликните на карте или введите адрес для выбора места
-              </p>
-            </div>
-
-            <div className="flex gap-3 pt-4">
+        <fieldset>
+          <legend>Категории</legend>
+          <div className="chips">
+            {categories.map((category) => (
               <button
+                key={category}
                 type="button"
-                onClick={() => navigate(-1)}
-                className="btn btn-outline flex-1"
+                className={form.category === category ? 'chip chip--active' : 'chip'}
+                onClick={() => setForm({ ...form, category })}
               >
-                Отмена
+                {category}
               </button>
-              <button
-                type="submit"
-                className="btn btn-primary flex-1"
-              >
-                Создать событие
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
-    </div>
+            ))}
+          </div>
+        </fieldset>
+
+        <label>
+          Дата
+          <input
+            type="datetime-local"
+            value={form.date}
+            onChange={(event) => setForm({ ...form, date: event.target.value })}
+            required
+          />
+        </label>
+        <label>
+          Местоположение
+          <input
+            value={form.address}
+            onChange={(event) => setForm({ ...form, address: event.target.value })}
+            placeholder="Рубинштейна, 10"
+            required
+          />
+          {locationState?.coordinates && (
+            <span className="field-note">
+              Точка на карте: {locationState.coordinates.lat.toFixed(5)}, {locationState.coordinates.lng.toFixed(5)}
+            </span>
+          )}
+        </label>
+        <label>
+          Максимум участников
+          <select
+            value={form.max_users}
+            onChange={(event) => setForm({ ...form, max_users: Number(event.target.value) })}
+          >
+            {[2, 3, 4, 5, 6, 8, 10, 12].map((count) => (
+              <option key={count} value={count}>{count}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Описание
+          <textarea
+            value={form.descriptions}
+            onChange={(event) => setForm({ ...form, descriptions: event.target.value })}
+            placeholder="Встречаемся, болтаем, знакомимся. Возьмите с собой хорошее настроение."
+            rows={5}
+          />
+        </label>
+
+        <button className="primary-button" disabled={loading}>
+          {loading ? 'Создаем...' : 'Создать событие'}
+        </button>
+      </form>
+    </main>
   );
 };
 

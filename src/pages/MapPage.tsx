@@ -1,225 +1,243 @@
-import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { eventsApi, categoryLabels } from '@/api';
-import { useMapStore, useFilterStore } from '@/stores';
-import type { Event } from '@/types';
-import YandexMap from '@/components/YandexMap';
+import { useEffect, useMemo, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { authApi, eventIcon, eventsApi } from '@/api';
+import BrandLogo from '@/components/BrandLogo';
+import EventCard from '@/components/EventCard';
 import EventFilters from '@/components/EventFilters';
-import CategoryBadge from '@/components/CategoryBadge';
+import YandexMap from '@/components/YandexMap';
+import { useAuthStore, useFilterStore } from '@/stores';
 
-const MapPage: React.FC = () => {
+const MapPage = () => {
   const navigate = useNavigate();
-  const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
-  const [markers, setMarkers] = useState<Array<{
-    id: number;
-    coordinates: [number, number];
-    title: string;
-    address?: string;
-    category: string;
-  }>>([]);
+  const queryClient = useQueryClient();
+  const { query, category } = useFilterStore();
+  const { user, clear } = useAuthStore();
+  const [selectedId, setSelectedId] = useState<number | undefined>();
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [locationStatus, setLocationStatus] = useState<'idle' | 'loading' | 'denied' | 'ready'>('idle');
+  const [draftPoint, setDraftPoint] = useState<{
+    lat: number;
+    lng: number;
+    address: string;
+    isLoadingAddress: boolean;
+  } | null>(null);
 
-  const { center, setCenter, setSelectedPlace, selectedCoordinates, selectedPlace } = useMapStore();
-  const { searchQuery, category, resetFilters } = useFilterStore();
-
-  const { data: eventsData, isLoading } = useQuery({
-    queryKey: ['events', { searchQuery, category }],
-    queryFn: () =>
-      eventsApi.getAll({
-        search: searchQuery || undefined,
-        category: category !== 'all' ? category : undefined,
-      }),
+  const { data: events = [], isLoading } = useQuery({
+    queryKey: ['events', query, category],
+    queryFn: () => eventsApi.getAll({ title: query || undefined, category: category || undefined }),
   });
 
-  const events = eventsData?.data?.items || [];
+  const selectedEvent = useMemo(
+    () => events.find((event) => event.id === selectedId) || null,
+    [events, selectedId]
+  );
+
+  const joinMutation = useMutation({
+    mutationFn: eventsApi.join,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['events'] });
+      queryClient.invalidateQueries({ queryKey: ['my-events'] });
+    },
+  });
 
   useEffect(() => {
-    setMarkers(events.map((event: Event) => ({
-      id: event.id,
-      coordinates: [event.coordinates.lat, event.coordinates.lng] as [number, number],
-      title: event.title,
-      address: event.address,
-      category: categoryLabels[event.category as keyof typeof categoryLabels],
-    })));
-  }, [events]);
+    if (!navigator.geolocation) {
+      setLocationStatus('denied');
+      return;
+    }
 
-  useEffect(() => {
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          const { latitude, longitude } = position.coords;
-          setCenter([latitude, longitude]);
-        },
-        () => {
-          console.log('Geolocation denied, using default');
-        }
+    setLocationStatus('loading');
+    const watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        setUserLocation({
+          lat: position.coords.latitude,
+          lng: position.coords.longitude,
+        });
+        setLocationStatus('ready');
+      },
+      () => setLocationStatus('denied'),
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 30000,
+      }
+    );
+
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, []);
+
+  const logout = async () => {
+    await authApi.logout().catch(() => undefined);
+    clear();
+  };
+
+  const resolveAddress = async (coords: { lat: number; lng: number }) => {
+    setSelectedId(undefined);
+    setDraftPoint({
+      ...coords,
+      address: 'Определяем адрес...',
+      isLoadingAddress: true,
+    });
+
+    try {
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${coords.lat}&lon=${coords.lng}&accept-language=ru`
       );
-    }
-  }, [setCenter]);
-
-  const handleMarkerClick = (id: string | number) => {
-    const event = events.find((e: Event) => e.id === Number(id));
-    if (event) {
-      setSelectedEvent(event);
-      setCenter([event.coordinates.lat, event.coordinates.lng]);
-    }
-  };
-
-  const handleMapClick = (coords: [number, number]) => {
-    setSelectedPlace('Новое событие', coords);
-  };
-
-  const closeEventPopup = () => {
-    setSelectedEvent(null);
-  };
-
-  const createEventAtLocation = () => {
-    if (selectedCoordinates) {
-      navigate('/create-event', {
-        state: {
-          coordinates: {
-            lat: selectedCoordinates[0],
-            lng: selectedCoordinates[1],
-          },
-          address: selectedPlace || '',
-        },
+      const data = await response.json();
+      setDraftPoint({
+        ...coords,
+        address: data.display_name || `${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}`,
+        isLoadingAddress: false,
       });
-      setSelectedPlace(null, null);
+    } catch {
+      setDraftPoint({
+        ...coords,
+        address: `${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}`,
+        isLoadingAddress: false,
+      });
     }
+  };
+
+  const createAtDraftPoint = () => {
+    if (!draftPoint) return;
+    navigate('/create-event', {
+      state: {
+        address: draftPoint.address,
+        coordinates: {
+          lat: draftPoint.lat,
+          lng: draftPoint.lng,
+        },
+      },
+    });
   };
 
   return (
-    <div className="h-screen flex flex-col">
-      {/* Search and Filter Bar */}
-      <div className="bg-white border-b border-gray-200 p-4 shadow-sm z-10">
-        <div className="container mx-auto">
-          <div className="flex flex-col md:flex-row gap-4">
-            <div className="flex-1">
-              <EventFilters />
+    <main className="phone-shell">
+      <header className="top-bar">
+        <BrandLogo compact />
+        <div className="top-bar__actions">
+          <Link className="avatar-button" to="/profile" title="Профиль">
+            {user?.name?.slice(0, 1) || 'К'}
+          </Link>
+          <button className="ghost-link" onClick={logout}>Выйти</button>
+        </div>
+      </header>
+
+      <YandexMap
+        markers={[
+          ...events.map((event) => ({
+            id: event.id,
+            lat: event.coordinates.lat,
+            lng: event.coordinates.lng,
+            title: event.title,
+            category: event.category,
+          })),
+          ...(draftPoint
+            ? [
+                {
+                  id: -1,
+                  lat: draftPoint.lat,
+                  lng: draftPoint.lng,
+                  title: draftPoint.address,
+                  category: 'Точка',
+                },
+              ]
+            : []),
+        ]}
+        selectedId={selectedEvent?.id}
+        userLocation={userLocation}
+        onMarkerClick={(id) => {
+          if (id === -1) return;
+          setDraftPoint(null);
+          setSelectedId(id);
+        }}
+        onMapDoubleClick={resolveAddress}
+      />
+
+      <section className="bottom-sheet">
+        <EventFilters />
+        <div className="sheet-heading">
+          <h2>{events.length} событий рядом</h2>
+          <Link className="floating-add" to="/create-event">+</Link>
+        </div>
+        <div className="map-hint">Двойной щелчок по карте добавит точку и определит адрес.</div>
+        {locationStatus === 'loading' && <div className="map-hint">Определяем ваше местоположение...</div>}
+        {locationStatus === 'denied' && <div className="map-hint">Разрешите геолокацию в браузере, чтобы увидеть себя на карте.</div>}
+
+        {draftPoint && (
+          <div className="draft-point">
+            <div>
+              <strong>Новая точка</strong>
+              <p>{draftPoint.address}</p>
             </div>
-            <button
-              onClick={resetFilters}
-              className="btn btn-outline self-start md:self-auto"
-            >
-              Сбросить фильтры
+            <button className="primary-button" onClick={createAtDraftPoint} disabled={draftPoint.isLoadingAddress}>
+              Создать
             </button>
           </div>
-        </div>
-      </div>
+        )}
 
-      {/* Map Container */}
-      <div className="flex-1 relative">
-        <YandexMap
-          center={center}
-          zoom={12}
-          markers={markers}
-          onMarkerClick={handleMarkerClick}
-          onMapClick={handleMapClick}
-        />
-
-        {/* Event popup */}
         {selectedEvent && (
-          <div className="absolute bottom-6 left-1/2 transform -translate-x-1/2 z-20 w-full max-w-md px-4">
-            <div className="bg-white rounded-lg shadow-xl p-4">
-              <button
-                onClick={closeEventPopup}
-                className="absolute top-2 right-2 text-gray-400 hover:text-gray-600"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M6 18L18 6M6 6l12 12"
-                  />
-                </svg>
-              </button>
-
-              <h3 className="font-bold text-lg mb-2 pr-6">{selectedEvent.title}</h3>
-              <div className="flex items-center gap-2 mb-3">
-                <CategoryBadge category={selectedEvent.category} />
-                <span className="text-sm text-gray-600">
-                  {new Date(selectedEvent.date_time).toLocaleString('ru-RU')}
-                </span>
-              </div>
-              <p className="text-sm text-gray-700 mb-3 line-clamp-2">
-                {selectedEvent.description}
+          <section className="selected-event">
+            <button className="selected-event__close" type="button" onClick={() => setSelectedId(undefined)}>
+              x
+            </button>
+            <div className="selected-event__icon">{eventIcon(selectedEvent.category)}</div>
+            <div className="selected-event__content">
+              <span className="category-badge">{selectedEvent.category}</span>
+              <h3>{selectedEvent.title}</h3>
+              <p className="event-card__meta">
+                {new Date(selectedEvent.date).toLocaleString('ru-RU', {
+                  weekday: 'long',
+                  day: 'numeric',
+                  month: 'long',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
               </p>
-              <div className="flex gap-2">
+              <p className="event-card__address">{selectedEvent.address}</p>
+              <p>{selectedEvent.description}</p>
+              <div className="detail-progress">
+                <span>{selectedEvent.currentUsers} / {selectedEvent.maxUsers} уже идут</span>
+                <span>{Math.round((selectedEvent.currentUsers / selectedEvent.maxUsers) * 100)}%</span>
+                <div className="progress">
+                  <span style={{ width: `${Math.round((selectedEvent.currentUsers / selectedEvent.maxUsers) * 100)}%` }} />
+                </div>
+              </div>
+              <div className="action-row">
                 <button
-                  onClick={() => navigate(`/events/${selectedEvent.id}`)}
-                  className="btn btn-primary flex-1"
+                  className="primary-button"
+                  disabled={joinMutation.isPending}
+                  onClick={() => joinMutation.mutate(selectedEvent.id)}
                 >
-                  Подробнее
+                  {joinMutation.isPending ? 'Идем...' : 'Пойду'}
                 </button>
-                <button
-                  onClick={() => navigate(`/events/${selectedEvent.id}/chat`)}
-                  className="btn btn-outline"
-                >
+                <button className="secondary-button" onClick={() => navigate(`/events/${selectedEvent.id}/chat`)}>
                   Чат
                 </button>
               </div>
             </div>
-          </div>
+          </section>
         )}
 
-        {/* Create event button */}
-        {selectedCoordinates && (
-          <div className="absolute bottom-6 right-4 z-20">
-            <button
-              onClick={createEventAtLocation}
-              className="btn btn-primary shadow-lg flex items-center gap-2"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M12 4v16m8-8H4"
-                />
-              </svg>
-              Создать событие
-            </button>
-          </div>
-        )}
-
-        {/* Loading state */}
-        {isLoading && (
-          <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-white p-4 rounded-lg shadow-lg">
-            <div className="skeleton h-4 w-32"></div>
-          </div>
-        )}
-
-        {/* Empty state */}
-        {!isLoading && events.length === 0 && (
-          <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-white p-6 rounded-lg shadow-lg text-center max-w-sm">
-            <svg className="w-16 h-16 mx-auto text-gray-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"
-              />
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"
-              />
-            </svg>
-            <h3 className="text-lg font-semibold mb-2">Событий не найдено</h3>
-            <p className="text-gray-600 text-sm mb-4">
-              Попробуйте изменить фильтры или создайте новое событие, кликнув на карте
-            </p>
-            {selectedCoordinates && (
-              <button onClick={createEventAtLocation} className="btn btn-primary">
-                Создать событие здесь
-              </button>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
+        {isLoading && <div className="empty-state">Загружаем события...</div>}
+        {!isLoading && events.length === 0 && <div className="empty-state">Событий пока нет. Создайте первое.</div>}
+        <div className="event-list">
+          {events.map((event) => (
+            <EventCard
+              key={event.id}
+              event={event}
+              compact={event.id !== selectedEvent?.id}
+              isSelected={event.id === selectedEvent?.id}
+              onSelect={(nextEvent) => {
+                setDraftPoint(null);
+                setSelectedId(nextEvent.id);
+              }}
+            />
+          ))}
+        </div>
+      </section>
+    </main>
   );
 };
 

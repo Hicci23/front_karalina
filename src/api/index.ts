@@ -52,6 +52,18 @@ const SPB_CENTER = { lat: 59.9343, lng: 30.3351 };
 const hashText = (value: string) =>
   value.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
 
+const getJoinedEventIds = () => {
+  try {
+    const raw = localStorage.getItem('kloket-auth');
+    if (!raw) return new Set<number>();
+    const parsed = JSON.parse(raw);
+    const events = parsed?.state?.user?.events || [];
+    return new Set<number>(events.map((event: BackendEvent) => event.id));
+  } catch {
+    return new Set<number>();
+  }
+};
+
 export const eventIcon = (category: string) => {
   const lower = category.toLowerCase();
   if (lower.includes('коф') || lower.includes('cafe')) return '☕';
@@ -65,6 +77,13 @@ export const eventIcon = (category: string) => {
 
 export const normalizeEvent = (event: BackendEvent): Event => {
   const seed = hashText(`${event.id}-${event.address}-${event.title}`);
+  const joinedEventIds = getJoinedEventIds();
+  const isJoined = joinedEventIds.has(event.id);
+  const fallbackCount = Math.max(
+    isJoined ? 1 : 0,
+    Math.min(event.max_users, Math.max(0, seed % Math.max(event.max_users, 1)))
+  );
+
   return {
     id: event.id,
     title: event.title,
@@ -73,7 +92,8 @@ export const normalizeEvent = (event: BackendEvent): Event => {
     address: event.address,
     date: event.date,
     maxUsers: event.max_users,
-    currentUsers: Math.max(1, Math.min(event.max_users, (seed % event.max_users) + 1)),
+    currentUsers: Math.max(isJoined ? 1 : 0, event.current_users ?? fallbackCount),
+    isJoined,
     coordinates: {
       lat: SPB_CENTER.lat + ((seed % 120) - 60) / 10000,
       lng: SPB_CENTER.lng + (((seed / 3) % 140) - 70) / 10000,
@@ -106,6 +126,10 @@ export const eventsApi = {
   },
   join: async (id: number) => {
     const response = await api.post<{ data: BackendEvent }>(`/events/join/${id}`);
+    return normalizeEvent(response.data.data);
+  },
+  leave: async (id: number) => {
+    const response = await api.post<{ data: BackendEvent }>(`/events/leave/${id}`);
     return normalizeEvent(response.data.data);
   },
   getMine: async () => {

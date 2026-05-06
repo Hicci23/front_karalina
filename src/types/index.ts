@@ -6,6 +6,7 @@ export interface BackendEvent {
   address: string;
   date: string;
   max_users: number;
+  current_users?: number;
 }
 
 export interface Event {
@@ -17,6 +18,7 @@ export interface Event {
   date: string;
   maxUsers: number;
   currentUsers: number;
+  isJoined?: boolean;
   coordinates: {
     lat: number;
     lng: number;
@@ -49,6 +51,16 @@ export interface User {
   role: string;
   is_active: boolean;
   events?: BackendEvent[];
+}
+
+export interface ChatMessage {
+  id: string;
+  eventId: number;
+  author: string;
+  text: string;
+  createdAt: string;
+  isOwn: boolean;
+  isSystem?: boolean;
 }
 
 export interface LoginData {

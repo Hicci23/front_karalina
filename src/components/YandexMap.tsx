@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { MouseEvent, WheelEvent } from 'react';
+import type { MouseEvent, WheelEvent as ReactWheelEvent } from 'react';
 import { eventIcon } from '@/api';
 
 interface Marker {
@@ -8,6 +8,8 @@ interface Marker {
   lng: number;
   title: string;
   category: string;
+  attendeesLabel?: string;
+  draggable?: boolean;
 }
 
 interface YandexMapProps {
@@ -15,6 +17,9 @@ interface YandexMapProps {
   selectedId?: number;
   userLocation?: { lat: number; lng: number } | null;
   onMarkerClick?: (id: number) => void;
+  onMarkerDoubleClick?: (id: number) => void;
+  onMarkerMove?: (id: number, coords: { lat: number; lng: number }) => void;
+  onMarkerMoveEnd?: (id: number, coords: { lat: number; lng: number }) => void;
   onMapClick?: (coords: { lat: number; lng: number }) => void;
   onMapDoubleClick?: (coords: { lat: number; lng: number }) => void;
 }
@@ -23,7 +28,6 @@ const TILE_SIZE = 256;
 const DEFAULT_CENTER = { lat: 59.9343, lng: 30.3351 };
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
-
 const lngToTileX = (lng: number, zoom: number) => ((lng + 180) / 360) * 2 ** zoom;
 
 const latToTileY = (lat: number, zoom: number) => {
@@ -43,9 +47,21 @@ const YandexMap = ({
   selectedId,
   userLocation,
   onMarkerClick,
+  onMarkerDoubleClick,
+  onMarkerMove,
+  onMarkerMoveEnd,
   onMapClick,
   onMapDoubleClick,
 }: YandexMapProps) => {
+  const mapRef = useRef<HTMLDivElement | null>(null);
+  const hasAutoCenteredRef = useRef(false);
+  const suppressedClickMarkerIdRef = useRef<number | null>(null);
+  const lastMarkerClickRef = useRef<{ id: number; at: number } | null>(null);
+  const markerDragRef = useRef<{
+    pointerId: number;
+    markerId: number;
+    moved: boolean;
+  } | null>(null);
   const dragRef = useRef<{
     pointerId: number;
     startX: number;
@@ -54,24 +70,52 @@ const YandexMap = ({
     centerY: number;
     moved: boolean;
   } | null>(null);
+
   const selectedMarker = markers.find((marker) => marker.id === selectedId);
-  const initialCenter = useMemo(() => {
-    if (selectedMarker) return { lat: selectedMarker.lat, lng: selectedMarker.lng };
-    if (userLocation) return userLocation;
+  const averageCenter = useMemo(() => {
     if (!markers.length) return DEFAULT_CENTER;
     return {
       lat: markers.reduce((sum, marker) => sum + marker.lat, 0) / markers.length,
       lng: markers.reduce((sum, marker) => sum + marker.lng, 0) / markers.length,
     };
-  }, [markers, selectedMarker, userLocation]);
+  }, [markers]);
 
-  const [center, setCenter] = useState(initialCenter);
+  const [center, setCenter] = useState(DEFAULT_CENTER);
   const [zoom, setZoom] = useState(14);
   const [isDragging, setIsDragging] = useState(false);
 
   useEffect(() => {
-    setCenter(initialCenter);
-  }, [initialCenter]);
+    const node = mapRef.current;
+    if (!node) return;
+
+    const preventWheelScroll = (event: globalThis.WheelEvent) => {
+      event.preventDefault();
+    };
+
+    node.addEventListener('wheel', preventWheelScroll, { passive: false });
+    return () => node.removeEventListener('wheel', preventWheelScroll);
+  }, []);
+
+  useEffect(() => {
+    if (selectedMarker) {
+      setCenter({ lat: selectedMarker.lat, lng: selectedMarker.lng });
+      hasAutoCenteredRef.current = true;
+      return;
+    }
+
+    if (hasAutoCenteredRef.current) return;
+
+    if (userLocation) {
+      setCenter(userLocation);
+      hasAutoCenteredRef.current = true;
+      return;
+    }
+
+    if (markers.length) {
+      setCenter(averageCenter);
+      hasAutoCenteredRef.current = true;
+    }
+  }, [averageCenter, markers.length, selectedMarker, userLocation]);
 
   const centerTile = {
     x: lngToTileX(center.lng, zoom),
@@ -101,18 +145,6 @@ const YandexMap = ({
     top: `calc(50% + ${(latToTileY(lat, zoom) - centerTile.y) * TILE_SIZE}px)`,
   });
 
-  const handleMapClick = (event: MouseEvent<HTMLDivElement>) => {
-    if (dragRef.current?.moved) return;
-    if (!onMapClick) return;
-    const rect = event.currentTarget.getBoundingClientRect();
-    const dx = (event.clientX - rect.left - rect.width / 2) / TILE_SIZE;
-    const dy = (event.clientY - rect.top - rect.height / 2) / TILE_SIZE;
-    onMapClick({
-      lat: tileYToLat(centerTile.y + dy, zoom),
-      lng: tileXToLng(centerTile.x + dx, zoom),
-    });
-  };
-
   const getCoordsFromPointer = (event: MouseEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
     const dx = (event.clientX - rect.left - rect.width / 2) / TILE_SIZE;
@@ -123,11 +155,21 @@ const YandexMap = ({
     };
   };
 
-  const handleWheel = (event: WheelEvent<HTMLDivElement>) => {
-    event.preventDefault();
+  const markManualInteraction = () => {
+    hasAutoCenteredRef.current = true;
+  };
 
+  const handleMapClick = (event: MouseEvent<HTMLDivElement>) => {
+    if (dragRef.current?.moved || !onMapClick) return;
+    markManualInteraction();
+    onMapClick(getCoordsFromPointer(event));
+  };
+
+  const handleWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
     const nextZoom = clamp(zoom + (event.deltaY < 0 ? 1 : -1), 2, 18);
     if (nextZoom === zoom) return;
+
+    markManualInteraction();
 
     const rect = event.currentTarget.getBoundingClientRect();
     const dx = (event.clientX - rect.left - rect.width / 2) / TILE_SIZE;
@@ -148,13 +190,16 @@ const YandexMap = ({
 
   return (
     <div
+      ref={mapRef}
       className={isDragging ? 'map-canvas map-canvas--dragging' : 'map-canvas'}
       role="application"
-      aria-label="Карта событий OpenStreetMap"
+      aria-label="Карта событий"
       onClick={handleMapClick}
       onWheel={handleWheel}
       onDoubleClick={(event) => {
+        if ((event.target as HTMLElement).closest('.map-marker')) return;
         event.preventDefault();
+        markManualInteraction();
         onMapDoubleClick?.(getCoordsFromPointer(event));
       }}
       onPointerDown={(event) => {
@@ -170,6 +215,17 @@ const YandexMap = ({
         setIsDragging(true);
       }}
       onPointerMove={(event) => {
+        const markerDrag = markerDragRef.current;
+        if (markerDrag?.pointerId === event.pointerId) {
+          markerDrag.moved = true;
+          markManualInteraction();
+          onMarkerMove?.(
+            markerDrag.markerId,
+            getCoordsFromPointer(event as unknown as MouseEvent<HTMLDivElement>)
+          );
+          return;
+        }
+
         const drag = dragRef.current;
         if (!drag || drag.pointerId !== event.pointerId) return;
         const dx = event.clientX - drag.startX;
@@ -177,6 +233,7 @@ const YandexMap = ({
         if (Math.abs(dx) + Math.abs(dy) > 3) {
           drag.moved = true;
         }
+        markManualInteraction();
         const nextX = drag.centerX - dx / TILE_SIZE;
         const nextY = drag.centerY - dy / TILE_SIZE;
         setCenter({
@@ -185,6 +242,18 @@ const YandexMap = ({
         });
       }}
       onPointerUp={(event) => {
+        const markerDrag = markerDragRef.current;
+        if (markerDrag?.pointerId === event.pointerId) {
+          suppressedClickMarkerIdRef.current = markerDrag.moved
+            ? markerDrag.markerId
+            : null;
+          onMarkerMoveEnd?.(
+            markerDrag.markerId,
+            getCoordsFromPointer(event as unknown as MouseEvent<HTMLDivElement>)
+          );
+          markerDragRef.current = null;
+        }
+
         const drag = dragRef.current;
         if (drag?.pointerId === event.pointerId) {
           event.currentTarget.releasePointerCapture(event.pointerId);
@@ -220,21 +289,62 @@ const YandexMap = ({
           key={marker.id}
           role="button"
           tabIndex={0}
-          className={selectedId === marker.id ? 'map-marker map-marker--active' : 'map-marker'}
+          className={[
+            selectedId === marker.id ? 'map-marker map-marker--active' : 'map-marker',
+            marker.draggable ? 'map-marker--draggable' : '',
+          ].filter(Boolean).join(' ')}
           style={markerPosition(marker.lat, marker.lng)}
           title={marker.title}
+          onPointerDown={(event) => {
+            event.stopPropagation();
+            if (!marker.draggable) return;
+            event.currentTarget.setPointerCapture(event.pointerId);
+            markerDragRef.current = {
+              pointerId: event.pointerId,
+              markerId: marker.id,
+              moved: false,
+            };
+          }}
           onClick={(event) => {
             event.stopPropagation();
-            setCenter({ lat: marker.lat, lng: marker.lng });
+            if (suppressedClickMarkerIdRef.current === marker.id) {
+              suppressedClickMarkerIdRef.current = null;
+              return;
+            }
+
+            const now = Date.now();
+            if (
+              marker.id === -1 &&
+              lastMarkerClickRef.current?.id === marker.id &&
+              now - lastMarkerClickRef.current.at < 300
+            ) {
+              lastMarkerClickRef.current = null;
+              onMarkerDoubleClick?.(marker.id);
+              return;
+            }
+
+            lastMarkerClickRef.current = { id: marker.id, at: now };
+            markManualInteraction();
+            if (marker.id !== -1) {
+              setCenter({ lat: marker.lat, lng: marker.lng });
+            }
             onMarkerClick?.(marker.id);
+          }}
+          onDoubleClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            lastMarkerClickRef.current = null;
+            onMarkerDoubleClick?.(marker.id);
           }}
           onKeyDown={(event) => {
             if (event.key === 'Enter') {
+              markManualInteraction();
               setCenter({ lat: marker.lat, lng: marker.lng });
               onMarkerClick?.(marker.id);
             }
           }}
         >
+          {marker.attendeesLabel && <i className="map-marker__count">{marker.attendeesLabel}</i>}
           <b>{eventIcon(marker.category)}</b>
         </span>
       ))}
@@ -246,16 +356,39 @@ const YandexMap = ({
       )}
 
       <div className="map-controls">
-        <button type="button" onClick={() => setZoom((value) => clamp(value + 1, 2, 18))} aria-label="Приблизить">
+        <button
+          type="button"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            markManualInteraction();
+            setZoom((value) => clamp(value + 1, 2, 18));
+          }}
+          aria-label="Приблизить"
+        >
           +
         </button>
-        <button type="button" onClick={() => setZoom((value) => clamp(value - 1, 2, 18))} aria-label="Отдалить">
+        <button
+          type="button"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            markManualInteraction();
+            setZoom((value) => clamp(value - 1, 2, 18));
+          }}
+          aria-label="Отдалить"
+        >
           -
         </button>
         {userLocation && (
           <button
             type="button"
-            onClick={() => setCenter(userLocation)}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              markManualInteraction();
+              setCenter(userLocation);
+            }}
             aria-label="Показать мое местоположение"
             title="Мое местоположение"
           >
@@ -263,6 +396,7 @@ const YandexMap = ({
           </button>
         )}
       </div>
+
       <a className="map-attribution" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">
         © OpenStreetMap
       </a>

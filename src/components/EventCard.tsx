@@ -29,14 +29,12 @@ const EventCard = ({ event, compact = false, isSelected = false, onSelect }: Eve
           })}
         </p>
         <p className="event-card__address">{event.address}</p>
-        {!compact && (
-          <div className="event-card__footer">
-            <span>{event.currentUsers} / {event.maxUsers} участников</span>
-            <div className="progress">
-              <span style={{ width: `${progress}%` }} />
-            </div>
+        <div className="event-card__footer">
+          <span>{event.currentUsers} / {event.maxUsers} участников</span>
+          <div className="progress">
+            <span style={{ width: `${progress}%` }} />
           </div>
-        )}
+        </div>
       </div>
     </button>
   );
